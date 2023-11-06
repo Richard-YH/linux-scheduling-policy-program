@@ -3,98 +3,159 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
+#include <string.h>
 
 typedef struct {
     pthread_t thread_id;       // ID returned by pthread_create()
     int thread_num;            // Application-defined thread #
     int sched_policy;          // Scheduling policy (e.g., SCHED_FIFO)
     int sched_priority;        // Priority within the scheduling policy
-    pthread_barrier_t *barrier; // Barrier for synchronizing thread start
 } thread_info_t;
 
-// Thread start function
-void *thread_start(void *arg) {
-    thread_info_t *tinfo = arg;
+int usage_explain(const char *program_name)
+{
+    int result = fprintf(stderr,
+        "Usage:\n"
+        "\t%s -n <num_thread> -t <time_wait> -s <policies> -p <priorities>\n"
+        "Options:\n"
+        "\t-n <num_threads>  Number of threads to run simultaneously\n"
+        "\t-t <time_wait>    Duration of \"busy\" period\n"
+        "\t-s <policies>     Scheduling policy for each thread,\n"
+        "\t                    currently only NORMAL(SCHED_NORMAL) and FIFO(SCHED_FIFO)\n"
+        "\t                    scheduling policies are supported.\n"
+        "\t-p <priorities>   Real-time thread priority for real-time threads\n"
+        "Example:\n"
+        "\t%s -n 4 -t 0.5 -s NORMAL,FIFO,NORMAL,FIFO -p -1,10,-1,30\n",
+        program_name, program_name);
 
-    // Wait at the barrier until all threads are ready to start
-    pthread_barrier_wait(tinfo->barrier);
-
-    // Thread work goes here...
-
-    return NULL;
+    return result;
 }
 
-int main(int argc, char *argv[]) {
-    int num_threads = 0; // Number of worker threads
-    int opt;
+int main(int argc, char **argv)
+{
+    int option;
+    int num_threads = -1;
+    char *policies = NULL;
+    char *priorities = NULL;
+    double time_wait = -1.0;
 
-    // 1. Parse program arguments
-    while ((opt = getopt(argc, argv, "n:")) != -1) {
-        switch (opt) {
+    // 1. Parse program arguments 
+    while ((option = getopt(argc, argv, "n:t:s:p:h")) != -1)
+    {
+        switch (option)
+        {
+            case 'h':
+                usage_explain(argv[0]);
+                printf("help\n");
+                exit(0);
             case 'n':
-                num_threads = atoi(optarg);
+                num_threads = strtol(optarg, NULL, 10);
+                printf("num_threads: %d\n", num_threads);
+                if (num_threads == 0)
+                {
+                    fprintf(stderr, "strtol: no digits were found\n");
+                    exit(1);
+                }
                 break;
-            default: /* '?' */
-                fprintf(stderr, "Usage: %s -n <num_threads>\n", argv[0]);
-                exit(EXIT_FAILURE);
+            case 'p':
+                priorities = optarg;
+                printf("priorities: %s\n", priorities);
+                break;
+            case 's':
+                policies = optarg;
+                printf("policies: %s\n", policies);
+                break;
+            case 't':
+                if (sscanf(optarg, "%lf", &time_wait) != 1)
+                {
+                    fprintf(stderr, "sscanf: error parsing time_wait %s\n", optarg);
+                    exit(1);
+                }
+                printf("time_wait: %lf\n", time_wait);
+                break;
+            default:
+                break;
         }
     }
 
-    if (num_threads <= 0) {
-        fprintf(stderr, "Invalid number of threads\n");
-        exit(EXIT_FAILURE);
+    if (num_threads == -1 || !policies || !priorities || time_wait == -1.0)
+    {
+        usage_explain(argv[0]);
+        exit(1);
     }
 
-    // Initialize barrier
-    pthread_barrier_t start_barrier;
-    pthread_barrier_init(&start_barrier, NULL, num_threads);
+   // 2. Create <num_threads> worker threads
+    thread_info_t thread_info[num_threads];  
 
-    // Allocate memory for thread_info_t structures
-    thread_info_t *tinfo = calloc(num_threads, sizeof(*tinfo));
+  // Policy parsing
+    char *policy_tokens[num_threads]; 
+    char *policy_token = strtok(policies, ",");
+    int policy_count = 0;
 
-    // 2. Create <num_threads> worker threads
+    while (policy_token != NULL && policy_count < num_threads) {
+        policy_tokens[policy_count] = policy_token;
+        printf("policy_token: %s\n", policy_token);
+
+        if (!strcmp(policy_token, "FIFO")) {
+            thread_info[policy_count].sched_policy = SCHED_FIFO; 
+        } else if (strcmp(policy_token, "NORMAL") && strcmp(policy_token, "OTHER")) {
+            fprintf(stderr, "Policy \"%s\" is not one of the supported policies\n", policy_token);
+            exit(1);
+        } else {
+            thread_info[policy_count].sched_policy = SCHED_OTHER; 
+        }
+
+        policy_token = strtok(NULL, ",");
+        policy_count++;
+    }
+
+    // Priority parsing
+    char *priority_tokens[num_threads]; 
+    char *priority_token = strtok(priorities, ",");
+    int priority_count = 0;
+
+    while (priority_token != NULL && priority_count < num_threads) {
+        priority_tokens[priority_count] = priority_token;
+        priority_token = strtok(NULL, ",");
+        priority_count++;
+    }
+
+    // Check if the number of policies and priorities match the number of threads
+    if (policy_count != num_threads || priority_count != num_threads) {
+        fprintf(stderr, "Error: Number of policies or priorities does not match the number of threads\n");
+        exit(1);
+    }
+
+    // Assign thread_info_t struct
     for (int i = 0; i < num_threads; i++) {
-        tinfo[i].thread_num = i + 1; // Thread numbering starts at 1
-
-        // 4. Set the attributes to each thread
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-
-        // Set scheduling policy and priority in attr
-        struct sched_param sched_param;
-        sched_param.sched_priority = ...; // Set the priority
-        pthread_attr_setschedpolicy(&attr, SCHED_FIFO); // Example policy
-        pthread_attr_setschedparam(&attr, &sched_param);
-        // Note: You might need to set other attributes or use different values
-
-        tinfo[i].sched_policy = SCHED_FIFO; // Example policy
-        tinfo[i].sched_priority = sched_param.sched_priority;
-        tinfo[i].barrier = &start_barrier;
-
-        // 3. Set CPU affinity (optional step)
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(0, &cpuset); // Assign to CPU 0, as an example
-        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpuset);
-
-        // Now, create the thread with the attributes
-        pthread_create(&tinfo[i].thread_id, &attr, thread_start, &tinfo[i]);
-
-        // Destroy the thread attributes object, since it's no longer needed
-        pthread_attr_destroy(&attr);
+        thread_info[i].thread_num = i;
+        // thread_info[i].sched_policy = atoi(policy_tokens[i]); 
+        
+        thread_info[i].sched_priority = atoi(priority_tokens[i]); 
     }
 
-    // 6. Wait for all threads to finish
     for (int i = 0; i < num_threads; i++) {
-        pthread_join(tinfo[i].thread_id, NULL);
+        printf("thread_info[%d].thread_num: %d\n", i, thread_info[i].thread_num);
+        printf("thread_info[%d].sched_policy: %d\n", i, thread_info[i].sched_policy);
+        printf("thread_info[%d].sched_priority: %d\n", i, thread_info[i].sched_priority);
     }
+        
+    // 3. Set CPU affinity 
+    
 
-    // Clean up barrier
-    pthread_barrier_destroy(&start_barrier);
 
-    // Free thread info
-    free(tinfo);
 
+
+    // for (int i = 0; i < <num_threads>; i++) {
+        /* 4. Set the attributes to each thread
+    } */
+    
+
+    // 5. Start all threads at once 
+
+    // 6. Wait for all threads to finish  
+
+
+    // thread_func(num_threads, policies, priorities, time_wait);
     return 0;
 }
-
