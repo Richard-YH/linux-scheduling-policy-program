@@ -1,9 +1,12 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sched.h>
+#include <pthread.h>
 #include <string.h>
+
+pthread_barrier_t barrier;
 
 typedef struct {
     pthread_t thread_id;       // ID returned by pthread_create()
@@ -31,6 +34,20 @@ int usage_explain(const char *program_name)
     return result;
 }
 
+void *thread_func(void *arg)
+{
+    /* 1. Wait until all threads are ready */
+    thread_info_t *thread_info = (thread_info_t *)arg;
+
+    /* 2. Do the task */ 
+    for (int i = 0; i < 3; i++) {
+        printf("Thread %d is running\n", thread_info->thread_num);
+        /* Busy for <time_wait> seconds */
+    }
+    /* 3. Exit the function  */
+    pthread_exit(NULL);
+}
+
 int main(int argc, char **argv)
 {
     int option;
@@ -38,6 +55,8 @@ int main(int argc, char **argv)
     char *policies = NULL;
     char *priorities = NULL;
     double time_wait = -1.0;
+    struct sched_param param;
+    pthread_attr_t attr;
 
     // 1. Parse program arguments 
     while ((option = getopt(argc, argv, "n:t:s:p:h")) != -1)
@@ -85,7 +104,7 @@ int main(int argc, char **argv)
     }
 
    // 2. Create <num_threads> worker threads
-    thread_info_t thread_info[num_threads];  
+    thread_info_t thread_info[num_threads];
 
   // Policy parsing
     char *policy_tokens[num_threads]; 
@@ -129,8 +148,6 @@ int main(int argc, char **argv)
     // Assign thread_info_t struct
     for (int i = 0; i < num_threads; i++) {
         thread_info[i].thread_num = i;
-        // thread_info[i].sched_policy = atoi(policy_tokens[i]); 
-        
         thread_info[i].sched_priority = atoi(priority_tokens[i]); 
     }
 
@@ -141,21 +158,48 @@ int main(int argc, char **argv)
     }
         
     // 3. Set CPU affinity 
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(0, &cpuset);
+    if ( pthread_setaffinity_np(thread_info[0].thread_id, sizeof(cpu_set_t), &cpuset) ) {
+        perror("pthread_setaffinity_np");
+    }
     
+    // 4. Set scheduling policy and priority
+    // attributes such as scheduling inheritance, scheduling policy and scheduling priority must be set
+    pthread_barrier_init(&barrier, NULL, num_threads);
+    for (int i = 0; i < num_threads; i++) {
+        if ( pthread_attr_init(&attr)) {
+            perror("pthread_attr_init");
+        }
+        if ( pthread_attr_setinheritsched(&attr, 1)) {
+            perror("pthread_attr_setinheritsched");
+        }
+        if ( pthread_attr_setschedpolicy(&attr, thread_info[i].sched_policy) ) {
+            perror("pthread_attr_setschedpolicy");
+        }
+        param.sched_priority = thread_info[i].sched_priority;
+        if ( pthread_attr_setschedparam(&attr, &param) ) {
+            perror("pthread_attr_setschedparam");
+        }
+    }
+
+    // 5. Start all threads at once
+    for (int i = 0; i < num_threads; i++) {
+        pthread_create(&thread_info[i].thread_id, &attr, thread_func, &thread_info[i]);
+        if ( pthread_attr_destroy(&attr)) {
+            perror("pthread_attr_destroy");
+        }
+    }
+    // Wait for all threads to be ready
+    pthread_barrier_wait(&barrier); 
 
 
+    // 6. Wait for all threads to finish
+    for (int i = 0; i < num_threads; i++) {
+        pthread_join(thread_info[i].thread_id, NULL);
+    }
+    pthread_barrier_destroy(&barrier);
 
-
-    // for (int i = 0; i < <num_threads>; i++) {
-        /* 4. Set the attributes to each thread
-    } */
-    
-
-    // 5. Start all threads at once 
-
-    // 6. Wait for all threads to finish  
-
-
-    // thread_func(num_threads, policies, priorities, time_wait);
     return 0;
 }
