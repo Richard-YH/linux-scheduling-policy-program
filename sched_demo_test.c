@@ -196,10 +196,6 @@ int main(int argc, char **argv)
     pthread_barrier_init(&barrier, NULL, num_threads);
     for (int i = 0; i < num_threads; i++)
     {
-        if (pthread_attr_init(&attr[i]))
-        {
-            perror("pthread_attr_init");
-        }
         if (pthread_attr_setinheritsched(&attr[i], PTHREAD_EXPLICIT_SCHED))
         {
             perror("pthread_attr_setinheritsched");
